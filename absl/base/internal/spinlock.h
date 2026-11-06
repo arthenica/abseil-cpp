@@ -240,7 +240,16 @@ class ABSL_LOCKABLE ABSL_ATTRIBUTE_WARN_UNUSED SpinLock {
   uint32_t TryLockInternal(uint32_t lock_value, uint32_t sleeper_bits);
   ABSL_ATTRIBUTE_COLD void SlowLock();
   ABSL_ATTRIBUTE_COLD void SlowUnlock(uint32_t lock_value);
+  // Target duration of SpinLoop() on multi-CPU hosts.
+  static constexpr int64_t kSpinNanoseconds = 400;
+
   uint32_t SpinLoop();
+  static uint32_t SpinLockLoop(
+      const std::atomic<uint32_t>* absl_nonnull lockword, int iterations);
+  static void ProbeSpinLockLoop(int iterations);
+  // Returns the number of SpinLockLoop() iterations that take about
+  // kSpinNanoseconds, or 1 on uniprocessors.
+  static int CalibrateSpinCount();
 
   inline bool TryLockImpl() {
     uint32_t lock_value = lockword_.load(std::memory_order_relaxed);

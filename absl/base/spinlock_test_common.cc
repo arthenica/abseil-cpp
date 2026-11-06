@@ -16,6 +16,8 @@
 // spinlock.  If the spinlock is working properly, all elements of the
 // array should be equal at the end of the test.
 
+#include <algorithm>
+#include <chrono>  // NOLINT(build/c++11)
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -54,6 +56,12 @@ struct SpinLockTest {
   }
 
   static bool IsCooperative(const SpinLock& l) { return l.IsCooperative(); }
+
+  static constexpr int64_t kSpinNanoseconds = SpinLock::kSpinNanoseconds;
+  static uint32_t SpinLoop(SpinLock& l) { return l.SpinLoop(); }
+  static void SetAdaptiveSpinCount(int count) {
+    SpinLock::SetAdaptiveSpinCount(count);
+  }
 };
 
 namespace {
@@ -294,6 +302,39 @@ TEST(SpinLockTest, IsCooperative) {
 TEST(SpinLockTest, ScopedLock) {
   SpinLock s;
   std::scoped_lock l(s);
+}
+
+// Checks that spinning on a held lock lasts about kSpinNanoseconds, to catch
+// calibration bugs such as a wrong clock frequency or unit.
+TEST(SpinLockTest, SpinsForTargetDuration) {
+  if (NumCPUs() <= 1) GTEST_SKIP() << "Uniprocessors don't spin";
+  constexpr double kTargetNs = SpinLockTest::kSpinNanoseconds;
+  constexpr int kTrials = 5;
+  constexpr int kBatchesPerTrial = 100;
+  constexpr int kSpinsPerBatch = 10;
+  SpinLock spinlock;
+  SpinLockHolder h(spinlock);  // Held, so each SpinLoop() spins to its limit.
+
+  // Noise only lengthens a batch, but can shorten a trial's spins through a
+  // slow calibration. So keep each trial's fastest batch, then the slowest
+  // trial, recalibrating in each.
+  double ns = 0;
+  for (int trial = 0; trial < kTrials; ++trial) {
+    SpinLockTest::SetAdaptiveSpinCount(0);
+    SpinLockTest::SpinLoop(spinlock);  // Calibrates.
+    double trial_ns = std::numeric_limits<double>::max();
+    for (int batch = 0; batch < kBatchesPerTrial; ++batch) {
+      const auto start = std::chrono::steady_clock::now();
+      for (int i = 0; i < kSpinsPerBatch; ++i) SpinLockTest::SpinLoop(spinlock);
+      const std::chrono::duration<double, std::nano> elapsed =
+          std::chrono::steady_clock::now() - start;
+      trial_ns = std::min(trial_ns, elapsed.count() / kSpinsPerBatch);
+    }
+    ns = std::max(ns, trial_ns);
+  }
+  // Loose enough for noise, but tight enough to catch a 2x error.
+  EXPECT_GT(ns, kTargetNs * 2 / 3);
+  EXPECT_LT(ns, kTargetNs * 3 / 2);
 }
 
 }  // namespace
